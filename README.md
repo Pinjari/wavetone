@@ -56,7 +56,12 @@ reported as `StrongBox (discrete secure element)`, ECDSA sign/verify with
 tamper rejection, OOB protocol verification with the enclave key, true
 over-the-air speaker→microphone BFSK decode (full and 25 % volume),
 replay rejection, and vault ciphertext-at-rest. The audio instrumented
-test skips on emulators, which have no microphone.
+tests are hardware-in-the-loop: they skip on emulators (no microphone)
+and when the burst is not physically audible at the mic (phone occluded,
+media volume near zero, or another app's capture silencing/distorting
+the stream — all observed live with consumer recorder apps). Run them
+with the phone stationary, media volume up, and no other recorder
+active; the decode assertions themselves never relax.
 
 Toolchain (recorded in `gradle/libs.versions.toml`): Gradle 8.13,
 AGP 8.9.2, Kotlin 2.1.20, Compose Multiplatform 1.8.0, Ktor 3.1.1 —
