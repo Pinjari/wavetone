@@ -1,103 +1,139 @@
 # Wavetone
 
-Dual-channel call attestation for Android (Compose Multiplatform):
+[![Build & Test](https://github.com/Pinjari/wavetone/actions/workflows/build.yml/badge.svg)](https://github.com/Pinjari/wavetone/actions/workflows/build.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 
-1. **OOB channel (hardware):** ECDSA P-256 challenge-response signed inside
-   Android StrongBox/TEE (iOS Secure Enclave in the full build), relayed over
-   a Ktor WebSocket. Result label: `HARDWARE VERIFIED`.
-2. **In-band acoustic channel (paired device):** pure-Kotlin BFSK modem
+**Who is really on this call?** Voice can be cloned in seconds; a hardware
+key cannot. Wavetone proves caller identity *cryptographically* during a
+call, over two independent channels, and locks payments when proof fails.
+
+📺 **Demo:** [`Wavetone_Demo.mp4`](Wavetone_Demo.mp4) (87 s, narrated) —
+hardware verification, live acoustic decode, a real incoming scam call,
+and the Scam-Breaker shield, end to end.
+
+## How it works
+
+1. **Out-of-band (hardware proof).** ECDSA P-256 challenge–response signed
+   inside Android **StrongBox/TEE** (iOS Secure Enclave in the full build),
+   relayed over a Ktor WebSocket. UI label: `HARDWARE VERIFIED`.
+2. **In-band acoustic (paired-device proof).** A pure-Kotlin BFSK modem
    (1600/2400 Hz, 352 samples/bit, ~640 ms burst, Goertzel demodulator,
-   CRC-8 + 40-bit truncated HMAC-SHA256, ±15 s window, replay guard).
-   Result label: `PAIRED DEVICE VERIFIED`. This proves possession of the
-   paired shared secret — not enclave possession — and is labeled as such.
-3. **Scam-Breaker:** an `AccessibilityService` that, during a FAILED/UNPAIRED
-   call session, covers the bottom 65% of UPI/banking/remote-access apps
-   (or any window showing "Pay ₹" / "Enter UPI PIN") with a crimson shield
-   (`TYPE_ACCESSIBILITY_OVERLAY`, no draw-over-apps permission needed).
+   CRC-8 + 40-bit truncated HMAC-SHA256, ±15 s window, replay guard) —
+   zero native DSP libraries. UI label: `PAIRED DEVICE VERIFIED`. This
+   proves possession of the paired shared secret, *not* enclave
+   possession, and is labeled honestly as such.
+3. **Scam-Breaker (OS-layer protection).** A `CallScreeningService` seeds
+   a call session; if attestation fails or the caller is unpaired, an
+   `AccessibilityService` covers the actionable area of UPI/banking/
+   remote-access apps (or any window advertising "Pay ₹" / "Enter UPI
+   PIN") with a lockdown shield (`TYPE_ACCESSIBILITY_OVERLAY` — no
+   draw-over-apps permission needed) until the call ends, the user ends
+   it from the shield, or a 3-second override is held.
 
-## Build
+## Repository layout
 
-```bash
-./gradlew :composeApp:testDebugUnitTest   # crypto vectors + FSK loopback + vault/session (27 tests)
-./gradlew :composeApp:lintDebug           # must be 0 errors
-./gradlew :composeApp:assembleDebug       # debug APK
-./gradlew :composeApp:assembleRelease     # R8-minified APK (~2.4 MB)
+```text
+composeApp/src/
+├── commonMain/     # protocol, pure-Kotlin crypto + DSP, CMP UI, demo console
+├── commonTest/     # 35 tests: NIST/RFC vectors, handshake windows/replay, modem loopback
+├── androidMain/    # KeyStore signer, AudioTrack/Record, screening + accessibility services
+├── androidInstrumentedTest/  # 6 on-device tests (StrongBox, over-the-air audio, vault)
+└── iosMain/        # companion target (compiles; enclave signing not faked)
 ```
 
-Release signing (optional, env-based — no secrets in the repo):
+## Build & test
+
+```bash
+./gradlew :composeApp:testDebugUnitTest        # 35 unit tests
+./gradlew :composeApp:lintDebug                # must be 0 errors
+./gradlew :composeApp:assembleDebug            # debug APK
+./gradlew :composeApp:assembleRelease          # R8-minified APK (~2.4 MB)
+./gradlew :composeApp:connectedDebugAndroidTest # 6 instrumented tests (real device)
+```
+
+Verified on real hardware (Pixel 9 Pro XL): StrongBox key generation
+reported as `StrongBox (discrete secure element)`, ECDSA sign/verify with
+tamper rejection, OOB protocol verification with the enclave key, true
+over-the-air speaker→microphone BFSK decode (full and 25 % volume),
+replay rejection, and vault ciphertext-at-rest. The audio instrumented
+test skips on emulators, which have no microphone.
+
+Toolchain (recorded in `gradle/libs.versions.toml`): Gradle 8.13,
+AGP 8.9.2, Kotlin 2.1.20, Compose Multiplatform 1.8.0, Ktor 3.1.1 —
+the latest mutually compatible set on the classic `androidTarget` DSL.
+
+Release signing is env-based, never hardcoded:
 `WAVETONE_KEYSTORE`, `WAVETONE_KEYSTORE_PASSWORD`, `WAVETONE_KEY_ALIAS`,
 `WAVETONE_KEY_PASSWORD`. Without them the release APK stays unsigned.
 
-Production notes:
+## Device setup (one-time)
 
-- The contact vault (incl. shared secrets) is encrypted at rest on Android
-  with AES-256-GCM, key in AndroidKeyStore; vault prefs are also excluded
-  from cloud backup / device transfer. Plaintext values from early builds
-  migrate transparently.
-- The call session is **persisted** (same encrypted store): process death
-  or reinstall mid-call no longer disarms the shield; services restore it
-  on bind.
-- When a real (screened) call returns to idle, the session auto-clears —
-  the shield disarms itself after hang-up. Verifying mid-call preserves
-  the session's real-call origin so auto-clear keeps working.
-- Shield copy is status-aware ("UNPAIRED CALLER" vs "HANDSHAKE FAILED"),
-  and the shield's **End Call & Unlock** actually terminates the telecom
-  call (with `ANSWER_PHONE_CALLS` granted).
+1. **Settings → Accessibility → Installed apps → Wavetone → enable**
+   (the Scam-Breaker shield; the dashboard shows its live ON/OFF state
+   with a shortcut here).
+2. **Phone → Settings → Call screening → select Wavetone**
+   (so real incoming numbers seed attestation sessions).
+3. Grant **Microphone** + **Phone** when asked — requested once, never
+   nagged; every feature degrades with an explanation, not a crash.
 
-Verified on real hardware (Pixel 9 Pro XL, instrumented tests in
-`androidInstrumentedTest`): StrongBox key generation reported as
-`StrongBox (discrete secure element)`, ECDSA sign/verify + tamper
-rejection, OOB protocol verification with the enclave key, and a true
-over-the-air speaker→microphone BFSK loopback decode. Run them with
-`./gradlew :composeApp:connectedDebugAndroidTest` (audio test skips on
-emulators, which have no microphone).
-- The dashboard shows the live **Scam-Breaker shield** state
-  (Accessibility service ON/OFF) with a shortcut to system settings —
-  Android revokes accessibility enablement after a force-stop, and the app
-  now surfaces that instead of failing silently.
-- OOB loopback deliberately refuses to run for real peers: it signs with
-  this device's key, so it can only verify the Demo Peer (self-key). Real
-  peers answer through the relay; on stage, verify them acoustically.
+## Permissions & call-audio safety
 
-Toolchain recorded in `gradle/libs.versions.toml` (Gradle 8.13, AGP 8.9.2,
-Kotlin 2.1.20, Compose Multiplatform 1.8.0, Ktor 3.1.1). The spec's newer
-pins (CMP 1.12/Kotlin 2.4) require AGP 9's new KMP plugin; this stack is the
-latest mutually compatible set and keeps the classic `androidTarget` DSL.
+| Permission | Used for | If denied |
+|---|---|---|
+| `RECORD_AUDIO` | acoustic listener | Listen reports unavailable; nothing fakes "listening" |
+| Call Screening role | seed sessions from real calls | screening stays inert; simulations still work |
+| `READ_PHONE_STATE` | hang-up auto-clear | auto-granted with the screening role; sessions end manually |
+| `ANSWER_PHONE_CALLS` | shield's "End Call & Unlock" | shield still unlocks the local session |
+| `SYSTEM_ALERT_WINDOW` | floating status pill only | no pill; shield is permission-free |
+| Accessibility | Scam-Breaker shield | dashboard flags it OFF with a settings shortcut |
 
-## One-time device setup (for the Scam-Breaker demo)
+The microphone is treated as call-critical: capture **refuses to start
+during a phone call**, auto-releases the instant a call starts or the app
+is backgrounded, and a mid-stream capture seizure surfaces as
+"Microphone stopped" instead of a stale listening state.
 
-1. Settings → Accessibility → Installed apps → **Wavetone** → enable.
-2. (Real calls) Phone app → Settings → Caller ID & spam / call screening →
-   select Wavetone as the call screening app, so `CallMonitorService` seeds
-   sessions for real incoming numbers.
-3. Grant Microphone + Phone permissions when prompted (needed for the
-   acoustic listener and "End Call & Unlock").
-
-## Stage demo script (works fully offline, one device)
+## Stage demo (offline, one device)
 
 Open Wavetone → **Create Demo Peer Contact**, then:
 
 1. **Run OOB Hardware Handshake (ECDSA)** → green `HARDWARE VERIFIED`
-   (real StrongBox/TEE sign + verify; loopback relay with 80 ms simulated
+   (real enclave sign + verify; loopback relay with 80 ms simulated
    latency — point `OobRelayClient.DEFAULT_RELAY_URL` at a real `wss://`
-   relay for two-device OOB).
-2. **Listen & Verify Acoustic Burst** → **Simulate Peer Burst** → green
-   `PAIRED DEVICE VERIFIED`; watch the 1600/2400 Hz bars and the
-   `AA 7E | SALT | MAC | CRC8` bitstream decode live.
-3. **Simulate Deepfake Attack Call** → red `SPOOFED CALL`.
-4. **Launch Mock UPI Payment** → the Accessibility shield slams over
-   **Pay ₹15,000**. Dismiss via **End Call & Unlock** (resets session) or
-   **Hold 3 Seconds to Override** (session stays locked).
+   relay for two-device OOB; loopback deliberately refuses real peers,
+   since it can only sign as this device).
+2. **Listen & Verify** → **Simulate Peer Burst** → green
+   `PAIRED DEVICE VERIFIED` with live spectrogram + bitstream decode.
+3. **Simulate Deepfake Attack Call** → red `SPOOFED CALL`, lockdown armed.
+4. **Launch Mock UPI Payment** → shield slams over **Pay ₹15,000**;
+   dismiss via **End Call & Unlock** or the 3-second override.
 
-Two-device acoustic demo: on both phones open **Pairing / Vault**, set my
-number, generate ONE shared secret and paste the *same* secret on both
-phones, swap public keys, then Emit on one phone while the other Listens.
+Two-device acoustic pairing: on both phones open **Pairing / Vault**,
+generate ONE shared secret on one phone and paste the *same* secret on
+both, swap public keys, then Emit on one phone while the other Listens.
 
-## Honest scope notes
+## Production notes
 
-- Android cannot inject audio into a cellular call uplink; the acoustic
-  channel travels speaker → microphone (speakerphone / nearby devices).
-- `CallScreeningService` covers telephony calls, not WhatsApp/VoIP in-call
-  audio; VoIP numbers arrive as unpaired unless paired manually.
-- iOS target compiles; Secure Enclave signing is deliberately not faked —
-  it reports unavailable until the CryptoKit Swift bridge is added.
+- Contact vault (incl. shared secrets) is **AES-256-GCM encrypted at
+  rest** (AndroidKeyStore key) and excluded from cloud backup/device
+  transfer; early plaintext values migrate transparently.
+- The call session is **persisted** in the same encrypted store —
+  process death or reinstall mid-call no longer disarms the shield.
+- Real (screened) calls **auto-clear on hang-up**; verifying mid-call
+  preserves the session's real-call origin so auto-clear keeps working.
+- Shield copy is status-aware (`UNPAIRED CALLER` vs `HANDSHAKE FAILED`);
+  its End Call button terminates the telecom call when permitted.
+- Screening always responds to telecom, even on internal errors —
+  a Wavetone fault can never stall an incoming call.
+
+## Honest scope
+
+- Android cannot inject audio into a cellular uplink; the acoustic
+  channel travels speaker → microphone (co-located devices/speakerphone).
+- `CallScreeningService` covers telephony calls, not WhatsApp/VoIP audio;
+  VoIP callers arrive as unpaired unless paired manually.
+- iOS compiles as a companion target; Secure Enclave signing reports
+  unavailable until the CryptoKit Swift bridge lands — never faked.
+
+## License
+
+[MIT](LICENSE) · Security reports: see [SECURITY.md](SECURITY.md).

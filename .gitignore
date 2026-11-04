@@ -8,3 +8,5 @@ captures/
 composeApp/build/
 *.keystore
 .DS_Store
+Wavetone_Demo_Raw.mp4
+*.log
