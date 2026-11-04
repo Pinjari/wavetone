@@ -1,0 +1,3 @@
+-keep class com.wavetone.app.** { *; }
+-dontwarn org.slf4j.**
+-dontwarn io.ktor.**
